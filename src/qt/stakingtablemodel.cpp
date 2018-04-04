@@ -84,7 +84,7 @@ StakingTableModel::~StakingTableModel()
 {
     delete priv;
 }
-
+#if 0
 void StakingTableModel::update()
 {
     QList<uint256> updated;
@@ -107,7 +107,7 @@ void StakingTableModel::update()
         priv->updateWallet(updated);
     }
 }
-
+#endif
 
 int StakingTableModel::rowCount(const QModelIndex &parent) const
 {

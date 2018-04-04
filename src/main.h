@@ -154,8 +154,6 @@ extern bool fAlerts;
 extern bool fLargeWorkForkFound;
 extern bool fLargeWorkInvalidChainFound;
 
-extern CBlockIndex* pindexBestHeader;
-
 /** Minimum disk space required - used in CheckDiskSpace() */
 static const uint64_t nMinDiskSpace = 52428800;
 

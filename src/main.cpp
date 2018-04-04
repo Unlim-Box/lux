@@ -60,7 +60,6 @@ CCriticalSection cs_main;
 
 BlockMap mapBlockIndex;
 CChain chainActive;
-CBlockIndex* pindexBestHeader = NULL;
 int64_t nTimeBestReceived = 0;
 CWaitableCriticalSection csBestBlock;
 CConditionVariable cvBlockChange;
@@ -1660,8 +1659,8 @@ bool IsInitialBlockDownload()
     static bool lockIBDState = false;
     if (lockIBDState)
         return false;
-    bool state = (chainActive.Height() < pindexBestHeader->nHeight - 24 * 6 ||
-                  pindexBestHeader->GetBlockTime() < GetTime() - 8 * 60 * 60); // ~144 blocks behind -> 2 x fork detection time
+    bool state = (chainActive.Height() < chainActive.Tip()->nHeight - 24 * 6 ||
+                  chainActive.Tip()->GetBlockTime() < GetTime() - 8 * 60 * 60); // ~144 blocks behind -> 2 x fork detection time
     if (!state)
         lockIBDState = true;
     return state;
@@ -1832,21 +1831,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState& state, const CCoinsVi
 
         // While checking, GetBestBlock() refers to the parent block.
         // This is also true for mempool checks.
-
-        BlockMap::iterator mi = mapBlockIndex.find(inputs.GetBestBlock());
-        if (mi == mapBlockIndex.end())
-        {
-            LogPrintf("%s (line %d): Cannot find best block\n", __FUNCTION__, __LINE__);
-            return state.Invalid(error("Cannot find best block"));
-        }
-
-        CBlockIndex* pindexPrev = mi->second;
-        if (!pindexPrev)
-        {
-            LogPrintf("%s (line %d): Cannot find the parent of current best block\n", __FUNCTION__, __LINE__);
-            return state.Invalid(error("Cannot find the parent of current best block"));
-        }
-
+        CBlockIndex* pindexPrev = mapBlockIndex.find(inputs.GetBestBlock())->second;
         int nSpendHeight = pindexPrev->nHeight + 1;
         CAmount nValueIn = 0;
         CAmount nFees = 0;
@@ -2313,68 +2298,51 @@ static bool FlushStateToDisk(CValidationState& state, FlushStateMode mode)
 {
     LOCK(cs_main);
     static int64_t nLastWrite = 0;
-    int retries = MAX_DATA_FLUSH_RETRY;
-    string strErr = "";
-
-    while (retries > 0)
-    {
-		bool isExceptionOccured = false;
-		try {
-		    if ((mode == FLUSH_STATE_ALWAYS) ||
-		        ((mode == FLUSH_STATE_PERIODIC || mode == FLUSH_STATE_IF_NEEDED) && pcoinsTip->GetCacheSize() > nCoinCacheSize) ||
-		        (mode == FLUSH_STATE_PERIODIC && GetTimeMicros() > nLastWrite + DATABASE_WRITE_INTERVAL * 1000000)) {
-		        // Typical CCoins structures on disk are around 100 bytes in size.
-		        // Pushing a new one to the database can cause it to be written
-		        // twice (once in the log, and once in the tables). This is already
-		        // an overestimation, as most will delete an existing entry or
-		        // overwrite one. Still, use a conservative safety factor of 2.
-		        if (!CheckDiskSpace(100 * 2 * 2 * pcoinsTip->GetCacheSize()))
-		            return state.Error("out of disk space");
-		        // First make sure all block and undo data is flushed to disk.
-		        FlushBlockFile();
-		        // Then update all block file information (which may refer to block and undo files).
-		        bool fileschanged = false;
-		        for (set<int>::iterator it = setDirtyFileInfo.begin(); it != setDirtyFileInfo.end();) {
-		            if (!pblocktree->WriteBlockFileInfo(*it, vinfoBlockFile[*it])) {
-		                return state.Abort("Failed to write to block index");
-		            }
-		            fileschanged = true;
-		            setDirtyFileInfo.erase(it++);
-		        }
-		        if (fileschanged && !pblocktree->WriteLastBlockFile(nLastBlockFile)) {
-		            return state.Abort("Failed to write to block index");
-		        }
-		        for (set<CBlockIndex*>::iterator it = setDirtyBlockIndex.begin(); it != setDirtyBlockIndex.end();) {
-		            if (!pblocktree->WriteBlockIndex(CDiskBlockIndex(*it))) {
-		                return state.Abort("Failed to write to block index");
-		            }
-		            setDirtyBlockIndex.erase(it++);
-		        }
-		        pblocktree->Sync();
-		        // Finally flush the chainstate (which may refer to block index entries).
-		        if (!pcoinsTip->Flush())
-		            return state.Abort("Failed to write to coin database");
-		        // Update best block in wallet (so we can detect restored wallets).
-		        if (mode != FLUSH_STATE_IF_NEEDED) {
-		            g_signals.SetBestChain(chainActive.GetLocator());
-		        }
-		        nLastWrite = GetTimeMicros();
-		    }
-		} catch (const std::runtime_error& e) {
-		    isExceptionOccured = true;
-
-		    strErr = strprintf("System error while flushing: %s", e.what());
-		    LogPrintf("%s\n", strErr);
-		}
-
-		if (!isExceptionOccured)
-		{
-			return true;
-		}
-		retries--;
+    try {
+        if ((mode == FLUSH_STATE_ALWAYS) ||
+            ((mode == FLUSH_STATE_PERIODIC || mode == FLUSH_STATE_IF_NEEDED) && pcoinsTip->GetCacheSize() > nCoinCacheSize) ||
+            (mode == FLUSH_STATE_PERIODIC && GetTimeMicros() > nLastWrite + DATABASE_WRITE_INTERVAL * 1000000)) {
+            // Typical CCoins structures on disk are around 100 bytes in size.
+            // Pushing a new one to the database can cause it to be written
+            // twice (once in the log, and once in the tables). This is already
+            // an overestimation, as most will delete an existing entry or
+            // overwrite one. Still, use a conservative safety factor of 2.
+            if (!CheckDiskSpace(100 * 2 * 2 * pcoinsTip->GetCacheSize()))
+                return state.Error("out of disk space");
+            // First make sure all block and undo data is flushed to disk.
+            FlushBlockFile();
+            // Then update all block file information (which may refer to block and undo files).
+            bool fileschanged = false;
+            for (set<int>::iterator it = setDirtyFileInfo.begin(); it != setDirtyFileInfo.end();) {
+                if (!pblocktree->WriteBlockFileInfo(*it, vinfoBlockFile[*it])) {
+                    return state.Abort("Failed to write to block index");
+                }
+                fileschanged = true;
+                setDirtyFileInfo.erase(it++);
+            }
+            if (fileschanged && !pblocktree->WriteLastBlockFile(nLastBlockFile)) {
+                return state.Abort("Failed to write to block index");
+            }
+            for (set<CBlockIndex*>::iterator it = setDirtyBlockIndex.begin(); it != setDirtyBlockIndex.end();) {
+                if (!pblocktree->WriteBlockIndex(CDiskBlockIndex(*it))) {
+                    return state.Abort("Failed to write to block index");
+                }
+                setDirtyBlockIndex.erase(it++);
+            }
+            pblocktree->Sync();
+            // Finally flush the chainstate (which may refer to block index entries).
+            if (!pcoinsTip->Flush())
+                return state.Abort("Failed to write to coin database");
+            // Update best block in wallet (so we can detect restored wallets).
+            if (mode != FLUSH_STATE_IF_NEEDED) {
+                g_signals.SetBestChain(chainActive.GetLocator());
+            }
+            nLastWrite = GetTimeMicros();
+        }
+    } catch (const std::runtime_error& e) {
+        return state.Abort(std::string("System error while flushing: ") + e.what());
     }
-
-    return state.Abort(strErr);
+    return true;
 }
 
 void FlushStateToDisk()
@@ -2960,8 +2928,6 @@ CBlockIndex* AddToBlockIndex(const CBlock& block)
     }
     pindexNew->nChainWork = (pindexNew->pprev ? pindexNew->pprev->nChainWork : 0) + GetBlockProof(*pindexNew);
     pindexNew->RaiseValidity(BLOCK_VALID_TREE);
-    if (pindexBestHeader == NULL || pindexBestHeader->nChainWork < pindexNew->nChainWork)
-        pindexBestHeader = pindexNew;
 
     //update previous block pointer
     if (pindexNew->nHeight)
@@ -3714,8 +3680,6 @@ bool static LoadBlockIndexDB()
             pindexBestInvalid = pindex;
         if (pindex->pprev)
             pindex->BuildSkip();
-        if (pindex->IsValid(BLOCK_VALID_TREE) && (pindexBestHeader == NULL || CBlockIndexWorkComparator()(pindexBestHeader, pindex)))
-            pindexBestHeader = pindex;
     }
 
     // Load block file info
@@ -4362,7 +4326,7 @@ void static ProcessGetData(CNode* pfrom)
                         // To prevent fingerprinting attacks, only send blocks outside of the active
                         // chain if they are valid, and no more than a max reorg depth than the best header
                         // chain we know about.
-                        send = mi->second->IsValid(BLOCK_VALID_SCRIPTS) && (pindexBestHeader != NULL) &&
+                        send = mi->second->IsValid(BLOCK_VALID_SCRIPTS) && (chainActive.Tip() != NULL) &&
                                (chainActive.Height() - mi->second->nHeight < Params().MaxReorganizationDepth());
                         if (!send) {
                             LogPrintf("ProcessGetData(): ignoring request from peer=%i for old block that isn't in the main chain\n", pfrom->GetId());
@@ -4726,7 +4690,7 @@ static bool ProcessMessage(CNode* pfrom, const string &strCommand, CDataStream& 
                 if (!fAlreadyHave && !fImporting && !fReindex && !mapBlocksInFlight.count(inv.hash)) {
                     // Add this to the list of blocks to request
                     vToFetch.push_back(inv);
-                    LogPrint("net", "getblocks (%d) %s to peer=%d\n", pindexBestHeader->nHeight, inv.hash.ToString(), pfrom->id);
+                    LogPrint("net", "getblocks (%d) %s to peer=%d\n", chainActive.Tip()->nHeight, inv.hash.ToString(), pfrom->id);
                 }
             }
 
@@ -5489,12 +5453,10 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         state.rejects.clear();
 
         // Start block sync
-        if (pindexBestHeader == NULL)
-            pindexBestHeader = chainActive.Tip();
         bool fFetch = state.fPreferredDownload || (nPreferredDownload == 0 && !pto->fClient && !pto->fOneShot); // Download if this is a nice peer, or we have no nice peers and this one might do.
         if (!state.fSyncStarted && !pto->fClient && fFetch /*&& !fImporting*/ && !fReindex) {
             // Only actively request headers from a single peer, unless we're close to end of initial download.
-            if (nSyncStarted == 0 || pindexBestHeader->GetBlockTime() > GetAdjustedTime() - 6 * 60 * 60) { // NOTE: was "close to today" and 24h in Bitcoin
+            if (nSyncStarted == 0 || chainActive.Tip()->GetBlockTime() > GetAdjustedTime() - 6 * 60 * 60) { // NOTE: was "close to today" and 24h in Bitcoin
                 state.fSyncStarted = true;
                 nSyncStarted++;
                 //CBlockIndex *pindexStart = chainActive.Tip()->pprev ? chainActive.Tip()->pprev : chainActive.Tip();
